@@ -1,0 +1,102 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: "This CloudFormation template will set up Splunk and Elkstack for evaluation/learning."
+Parameters:
+  MyKeyPair:
+    Type : AWS::EC2::KeyPair::KeyName
+    Description:
+      "Select a key pair to launch Splunk instance with."
+  IPAddress:
+    Type: String
+    Description:
+      "Enter your IP Address here (ex. 0.0.0.0/32)"
+    AllowedPattern: (\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})
+    ConstraintDescription: Must be a valid IP CIDR range of the form x.x.x.x/x.
+  ElasticSearchName:
+    Type: String
+    Description:
+      "Enter your elastic domain name here."
+Mappings:
+  RegionMap:
+    us-east-1:
+      AMI: ami-011b3ccf1bd6db744
+    us-west-2:
+      AMI: ami-036affea69a1101c9
+Resources:
+  ElasticSearchDemo:
+    Type: AWS::Elasticsearch::Domain
+    Properties: 
+      AccessPolicies:
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: "*"
+            Action: "es:*"
+            Resource: !Sub arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${ElasticSearchName}/*
+            Condition:
+              IpAddress:
+                aws:SourceIp:
+                  - !Ref IPAddress
+      DomainName: !Ref ElasticSearchName
+      ElasticsearchVersion: '6.4'
+      ElasticsearchClusterConfig:
+        InstanceType: t2.small.elasticsearch
+        InstanceCount: 1
+      EBSOptions:
+        EBSEnabled: true
+        VolumeType: gp2
+        VolumeSize: 35
+  SplunkSearchDemo:
+    Type: AWS::EC2::Instance                     
+    Properties:
+      BlockDeviceMappings:
+        - DeviceName: "/dev/sda1"
+          Ebs:
+            VolumeSize: 35
+            VolumeType: gp2
+      ImageId: !FindInMap
+        - RegionMap
+        - !Ref AWS::Region
+        - AMI
+      InstanceType: t2.small
+      KeyName: !Ref MyKeyPair
+      Tags: 
+        - Key: Name
+          Value: Splunk
+      SecurityGroups:
+        - !Ref SplunkSecurityGroup
+      UserData:
+        Fn::Base64:
+          !Sub |
+              #!/bin/bash -ex
+              sudo yum install -y wget;
+              cd /tmp/;
+              sudo wget -O splunk-7.2.5-088f49762779-linux-2.6-x86_64.rpm 'https://www.splunk.com/bin/splunk/DownloadActivityServlet?architecture=x86_64&platform=linux&version=7.2.5&product=splunk&filename=splunk-7.2.5-088f49762779-linux-2.6-x86_64.rpm&wget=true';
+              sudo rpm -i splunk-7.2.5-088f49762779-linux-2.6-x86_64.rpm;
+              sudo /opt/splunk/bin/splunk start --accept-license --answer-yes --no-prompt --seed-passwd Ch@nG3mEP1z;
+              sudo /opt/splunk/bin/splunk enable boot-start;
+              sudo echo -e '[settings]\nhttpport = 8000\nenableSplunkWebSSL = true' > /tmp/web.conf;
+              sudo mv /tmp/web.conf /opt/splunk/etc/system/local/web.conf;
+              sudo /opt/splunk/bin/splunk enable webserver -auth admin:Ch@nG3mEP1z;
+              sudo /opt/splunk/bin/splunk stop;
+              sudo chown -R splunk:splunk /opt/splunk;
+              sudo /opt/splunk/bin/splunk start;
+  SplunkSecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: Open necessary ports for Splunk
+        SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          CidrIp: !Ref IPAddress
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref IPAddress
+Outputs:
+  KibanaFrontEnd:
+    Description: FrontEnd Kibana URL
+    Value: !Join ["", ["https://", !GetAtt ElasticSearchDemo.DomainEndpoint, "/_plugin/kibana/"]]
+  SplunkFrontEnd:
+    Description: FrontEnd Splunk URL
+    Value: !Join ["", ["https://", !GetAtt SplunkSearchDemo.PublicDnsName, ":8000/"]]
